@@ -1,0 +1,27 @@
+{
+  "name": "mac-controller",
+  "version": "1.0.0",
+  "description": "Remote Mac Controller Web Application",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "keywords": [
+    "volume",
+    "control",
+    "remote"
+  ],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.18.2",
+    "jsonwebtoken": "^9.0.2",
+    "loudness": "^0.4.2",
+    "robotjs": "^0.6.0",
+    "sharp": "^0.35.3",
+    "ws": "^8.18.3"
+  }
+}
