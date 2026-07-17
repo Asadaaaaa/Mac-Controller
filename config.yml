@@ -1,0 +1,14 @@
+# Mac Controller Configuration
+
+# The PIN required for client devices to authenticate and connect
+pin: "9563"
+
+# Server configuration
+server:
+  port: 3000
+  host: "0.0.0.0"
+
+# JWT secrets
+jwt:
+  accessTokenSecret: "access-token-secret-key-123"
+  refreshTokenSecret: "refresh-token-secret-key-456"

@@ -10,18 +10,35 @@ const AuthService = require('../services/AuthService');
 const WebSocketHandler = require('./WebSocketHandler');
 
 class WebServer {
-    constructor(port = 3000, host = '0.0.0.0') {
-        this.port = port;
-        this.host = host;
+    constructor(port, host) {
+        const fs = require('fs');
+        const yaml = require('js-yaml');
+
+        let config = {};
+        try {
+            const configPath = path.join(__dirname, '..', '..', 'config.yml');
+            if (fs.existsSync(configPath)) {
+                config = yaml.load(fs.readFileSync(configPath, 'utf8')) || {};
+            }
+        } catch (e) {
+            console.error('Warning: Failed to load config.yml, using defaults. Error:', e.message);
+        }
+
+        this.port = port || (config.server && config.server.port) || 3000;
+        this.host = host || (config.server && config.server.host) || '0.0.0.0';
         this.app = express();
         this.server = http.createServer(this.app);
         this.wss = new WebSocket.Server({ server: this.server });
 
+        const pin = config.pin !== undefined ? String(config.pin) : '9563';
+        const accessTokenSecret = (config.jwt && config.jwt.accessTokenSecret) || 'access-token-secret-key-123';
+        const refreshTokenSecret = (config.jwt && config.jwt.refreshTokenSecret) || 'refresh-token-secret-key-456';
+
         // Instantiate components
         this.authService = new AuthService(
-            '9563', // Static PIN
-            'access-token-secret-key-123',
-            'refresh-token-secret-key-456'
+            pin,
+            accessTokenSecret,
+            refreshTokenSecret
         );
         this.volumeController = new VolumeController();
         this.inputController = new InputController();
