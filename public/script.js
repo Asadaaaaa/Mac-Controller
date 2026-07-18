@@ -28,6 +28,8 @@ const fullscreenBtn = document.getElementById('fullscreenBtn');
 const exitFullscreenBtn = document.getElementById('exitFullscreenBtn');
 const remoteCursor = document.getElementById('remoteCursor');
 const resolutionSelect = document.getElementById('resolutionSelect');
+const gyroToggle = document.getElementById('gyroToggle');
+const gyroSensitivitySelect = document.getElementById('gyroSensitivitySelect');
 
 // Watch tab elements
 const watchStream = document.getElementById('watchStream');
@@ -88,6 +90,16 @@ let unlockStartX = 0;
 let unlockThumbWidth = 0;
 let unlockTrackWidth = 0;
 let maxDrag = 0;
+
+// Gyroscope / Air Mouse State
+let isGyroActive = false;
+let lastBeta = null;
+let lastGamma = null;
+let gyroSensitivity = 1.0;
+let smoothX = 0;
+let smoothY = 0;
+let velocityX = 0;
+let velocityY = 0;
 
 // Watch mode state
 let isWatchActive = false;
@@ -167,6 +179,7 @@ function connectWebSocket() {
     ws.onclose = () => {
         console.log('❌ WebSocket disconnected');
         showError('Disconnected');
+        disableGyroUI();
         // Attempt to reconnect after 3 seconds
         reconnectTimeout = setTimeout(() => {
             console.log('🔄 Attempting to reconnect...');
@@ -296,8 +309,8 @@ function handleWebSocketMessage(data) {
                     serverScreenW = data.screenSize.width;
                     serverScreenH = data.screenSize.height;
                     
-                    // Only update with server coordinates if not currently dragging
-                    if (!isDragging) {
+                    // Only update with server coordinates if not currently dragging or using gyroscope
+                    if (!isDragging && !isGyroActive) {
                         localMouseX = data.mouse.x;
                         localMouseY = data.mouse.y;
                     }
@@ -392,6 +405,7 @@ function lockInterface() {
     lockScreen.classList.remove('hidden');
     localStorage.setItem('isLocked', 'true');
     triggerHaptic([20]);
+    disableGyroUI();
 }
 
 // Unlock Interface
@@ -543,6 +557,14 @@ function setupEventListeners() {
 
     // Live Screen Events
     screenToggle.addEventListener('change', (e) => toggleScreenStream(e.target.checked));
+
+    // Gyroscope Mouse Events
+    if (gyroToggle) {
+        gyroToggle.addEventListener('change', handleGyroToggle);
+    }
+    if (gyroSensitivitySelect) {
+        gyroSensitivitySelect.addEventListener('change', handleGyroSensitivityChange);
+    }
 
     // Fullscreen Events
     fullscreenBtn.addEventListener('click', (e) => {
@@ -1354,6 +1376,234 @@ function toggleWatchFullscreen() {
         if (document.fullscreenElement && document.exitFullscreen) {
             document.exitFullscreen().catch(() => {});
         }
+    }
+}
+
+// --- Gyroscope Mouse Helpers ---
+
+function showToast(message) {
+    let toast = document.getElementById('toast');
+    if (!toast) {
+        toast = document.createElement('div');
+        toast.id = 'toast';
+        toast.className = 'toast-container';
+        document.body.appendChild(toast);
+    }
+    toast.textContent = message;
+    toast.classList.add('show');
+    
+    if (toast.timeoutId) {
+        clearTimeout(toast.timeoutId);
+    }
+    
+    toast.timeoutId = setTimeout(() => {
+        toast.classList.remove('show');
+    }, 2500);
+}
+
+async function requestGyroPermission() {
+    let orientationGranted = false;
+    let motionGranted = false;
+
+    if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+        try {
+            const state = await DeviceOrientationEvent.requestPermission();
+            orientationGranted = state === 'granted';
+        } catch (error) {
+            console.error('Error requesting orientation permission:', error);
+        }
+    } else {
+        orientationGranted = 'ondeviceorientation' in window || 'DeviceOrientationEvent' in window;
+    }
+
+    if (typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function') {
+        try {
+            const state = await DeviceMotionEvent.requestPermission();
+            motionGranted = state === 'granted';
+        } catch (error) {
+            console.error('Error requesting motion permission:', error);
+        }
+    } else {
+        motionGranted = 'ondevicemotion' in window || 'DeviceMotionEvent' in window;
+    }
+
+    return orientationGranted && motionGranted;
+}
+
+function startGyro() {
+    isGyroActive = true;
+    lastBeta = null;
+    lastGamma = null;
+    smoothX = 0;
+    smoothY = 0;
+    velocityX = 0;
+    velocityY = 0;
+    window.addEventListener('deviceorientation', handleGyroscope);
+    window.addEventListener('devicemotion', handleMotion);
+    showToast('Sensors Enabled (Tilt & Slide)');
+}
+
+function stopGyro() {
+    isGyroActive = false;
+    window.removeEventListener('deviceorientation', handleGyroscope);
+    window.removeEventListener('devicemotion', handleMotion);
+    showToast('Sensors Disabled');
+}
+
+function handleGyroscope(e) {
+    if (!isGyroActive) return;
+
+    const beta = e.beta;
+    const gamma = e.gamma;
+
+    if (beta === null || gamma === null) return;
+
+    if (lastBeta === null || lastGamma === null) {
+        lastBeta = beta;
+        lastGamma = gamma;
+        return;
+    }
+
+    const deltaBeta = beta - lastBeta;
+    const deltaGamma = gamma - lastGamma;
+
+    // Ignore major flip anomalies (device rotated rapidly)
+    if (Math.abs(deltaBeta) > 45 || Math.abs(deltaGamma) > 45) {
+        lastBeta = beta;
+        lastGamma = gamma;
+        return;
+    }
+
+    // Get current screen orientation angle (portrait vs landscape)
+    const orientation = window.orientation || (screen.orientation && screen.orientation.angle) || 0;
+    const angleRad = (orientation * Math.PI) / 180;
+    const cos = Math.cos(angleRad);
+    const sin = Math.sin(angleRad);
+
+    // Rotate coordination axes based on orientation
+    const rotatedX = deltaGamma * cos + deltaBeta * sin;
+    const rotatedY = deltaBeta * cos - deltaGamma * sin;
+
+    // Apply scale factors (sensitivity multiplier and baseline scale)
+    const baseScale = 8;
+    const rawMoveX = rotatedX * baseScale * gyroSensitivity;
+    const rawMoveY = rotatedY * baseScale * gyroSensitivity;
+
+    // Low pass filter smoothing
+    const smoothing = 0.25;
+    smoothX = (rawMoveX * smoothing) + (smoothX * (1 - smoothing));
+    smoothY = (rawMoveY * smoothing) + (smoothY * (1 - smoothing));
+
+    const finalMoveX = Math.round(smoothX);
+    const finalMoveY = Math.round(smoothY);
+
+    const threshold = 0.05;
+    if (Math.abs(smoothX) > threshold || Math.abs(smoothY) > threshold) {
+        if (finalMoveX !== 0 || finalMoveY !== 0) {
+            scheduleMouseMove(finalMoveX, finalMoveY);
+        }
+    }
+
+    lastBeta = beta;
+    lastGamma = gamma;
+}
+
+function handleMotion(e) {
+    if (!isGyroActive) return;
+
+    // Prefer linear acceleration (gravity excluded).
+    // Fall back to accelerationIncludingGravity if the device doesn't support gravity separation.
+    // When phone is flat on desk, gravity is almost entirely on Z axis,
+    // so X and Y from accelerationIncludingGravity are still usable.
+    const accel = (e.acceleration && e.acceleration.x !== null)
+        ? e.acceleration
+        : e.accelerationIncludingGravity;
+
+    if (!accel || accel.x === null || accel.y === null) return;
+
+    let ax = accel.x;
+    let ay = accel.y;
+
+    // Deadzone filter — reject sensor noise and minor desk vibrations
+    const deadzone = 0.4; // m/s²
+    const axAbove = Math.abs(ax) >= deadzone;
+    const ayAbove = Math.abs(ay) >= deadzone;
+    if (!axAbove) ax = 0;
+    if (!ayAbove) ay = 0;
+
+    // If nothing above deadzone, just apply friction and exit
+    if (!axAbove && !ayAbove) {
+        // Aggressive friction when phone is still — stop cursor quickly
+        velocityX *= 0.6;
+        velocityY *= 0.6;
+        if (Math.abs(velocityX) < 0.5) velocityX = 0;
+        if (Math.abs(velocityY) < 0.5) velocityY = 0;
+
+        const mx = Math.round(velocityX);
+        const my = Math.round(velocityY);
+        if (mx !== 0 || my !== 0) {
+            scheduleMouseMove(mx, my);
+        }
+        return;
+    }
+
+    // Rotate acceleration vector based on screen orientation
+    const orientation = window.orientation || (screen.orientation && screen.orientation.angle) || 0;
+    const angleRad = (orientation * Math.PI) / 180;
+    const cos = Math.cos(angleRad);
+    const sin = Math.sin(angleRad);
+
+    const rotatedX = ax * cos + ay * sin;
+    const rotatedY = ay * cos - ax * sin;
+
+    // Delta time in seconds
+    const dt = (e.interval || 16) / 1000;
+
+    // Integrate acceleration into velocity
+    // X axis: slide right → positive accel.x → positive deltaX → cursor moves right (correct, no negation)
+    // Y axis: slide forward (away from user) → positive accel.y → but screen Y is inverted → negate
+    const accelScale = 120;
+    velocityX += rotatedX * dt * accelScale * gyroSensitivity;
+    velocityY += -rotatedY * dt * accelScale * gyroSensitivity;
+
+    // Gentle friction while actively sliding — preserve momentum
+    velocityX *= 0.92;
+    velocityY *= 0.92;
+
+    const finalMoveX = Math.round(velocityX);
+    const finalMoveY = Math.round(velocityY);
+
+    if (finalMoveX !== 0 || finalMoveY !== 0) {
+        scheduleMouseMove(finalMoveX, finalMoveY);
+    }
+}
+
+async function handleGyroToggle(e) {
+    triggerHaptic([15]);
+    if (e.target.checked) {
+        const granted = await requestGyroPermission();
+        if (granted) {
+            startGyro();
+        } else {
+            e.target.checked = false;
+            showToast('Sensor access denied or not supported');
+        }
+    } else {
+        stopGyro();
+    }
+}
+
+function handleGyroSensitivityChange(e) {
+    gyroSensitivity = parseFloat(e.target.value);
+    showToast(`Sensor sensitivity: ${e.target.value}x`);
+}
+
+function disableGyroUI() {
+    if (gyroToggle) {
+        gyroToggle.checked = false;
+    }
+    if (isGyroActive) {
+        stopGyro();
     }
 }
 

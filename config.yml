@@ -7,6 +7,10 @@ pin: "9563"
 server:
   port: 3000
   host: "0.0.0.0"
+  ssl:
+    enabled: true
+    keyPath: "certs/key.pem"
+    certPath: "certs/cert.pem"
 
 # JWT secrets
 jwt:
