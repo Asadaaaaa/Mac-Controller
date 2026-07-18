@@ -146,9 +146,19 @@ class WebSocketHandler {
 
                         case 'mouseClick':
                             try {
-                                const { button } = payload;
-                                this.inputController.clickMouse(button);
-                                response = { type, success: true, button };
+                                const { button, double } = payload;
+                                this.inputController.clickMouse(button, double);
+                                response = { type, success: true, button, double };
+                            } catch (error) {
+                                response = { type, success: false, error: error.message };
+                            }
+                            break;
+
+                        case 'toggleMouse':
+                            try {
+                                const { button, state } = payload;
+                                this.inputController.toggleMouse(button, state);
+                                response = { type, success: true, button, state };
                             } catch (error) {
                                 response = { type, success: false, error: error.message };
                             }
@@ -228,6 +238,14 @@ class WebSocketHandler {
                 ws.screenStreamer.stop();
                 ws.watchStreamer.stop();
                 ws.audioStreamer.stop();
+                
+                // Release mouse buttons on disconnect to prevent stuck down state
+                try {
+                    this.inputController.toggleMouse('left', 'up');
+                    this.inputController.toggleMouse('right', 'up');
+                } catch (e) {
+                    // Ignore errors if toggleMouse fails (e.g. robotjs not loaded / error)
+                }
             });
 
             ws.on('error', (error) => {

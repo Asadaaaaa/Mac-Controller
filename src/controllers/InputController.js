@@ -10,12 +10,24 @@ class InputController {
         robot.scrollMouse(x, y);
     }
 
-    clickMouse(button) {
+    clickMouse(button, double = false) {
         const validButtons = ['left', 'right', 'middle'];
         if (!validButtons.includes(button)) {
             throw new Error('Invalid button. Must be: left, right, or middle');
         }
-        robot.mouseClick(button);
+        robot.mouseClick(button, double);
+    }
+
+    toggleMouse(button, state) {
+        const validButtons = ['left', 'right', 'middle'];
+        if (!validButtons.includes(button)) {
+            throw new Error('Invalid button. Must be: left, right, or middle');
+        }
+        const validStates = ['down', 'up'];
+        if (!validStates.includes(state)) {
+            throw new Error('Invalid state. Must be: down or up');
+        }
+        robot.mouseToggle(state, button);
     }
 
     typeText(text) {

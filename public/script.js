@@ -69,6 +69,18 @@ let touchStartY = 0;
 const TAP_THRESHOLD = 10; // Max movement for a tap
 const TAP_DURATION = 250; // Max duration for a tap
 
+// Double-tap and Drag/Click Gesture State
+let isDoubleTapDraggingCandidate = false;
+let isDoubleTapDragging = false;
+let clickTimeout = null;
+
+// Desktop Mouse simulation states
+let lastMouseUpTime = 0;
+let isMouseDoubleDragCandidate = false;
+let isMouseDoubleDragging = false;
+let mouseStartX = 0;
+let mouseStartY = 0;
+
 // Lock Screen State
 let isLocked = false;
 let isUnlockDragging = false;
@@ -507,6 +519,7 @@ function setupEventListeners() {
 
     // Touchpad Mouse Support (for desktop testing)
     touchpad.addEventListener('click', () => handleMouseClick('left'));
+    touchpad.addEventListener('dblclick', () => handleMouseClick('left', true));
     touchpad.addEventListener('contextmenu', (e) => {
         e.preventDefault();
         handleMouseClick('right');
@@ -699,7 +712,17 @@ function handleTouchpadStart(e) {
     isDragging = true;
     lastX = e.clientX;
     lastY = e.clientY;
+    mouseStartX = e.clientX;
+    mouseStartY = e.clientY;
     touchpad.classList.add('dragging');
+
+    // Double mousedown drag detection for desktop mouse testing
+    const timeSinceLastMouseUp = Date.now() - lastMouseUpTime;
+    if (timeSinceLastMouseUp < 300) {
+        isMouseDoubleDragCandidate = true;
+    } else {
+        isMouseDoubleDragCandidate = false;
+    }
 }
 
 function getRotatedDeltas(dx, dy) {
@@ -711,6 +734,18 @@ function handleTouchpadMove(e) {
 
     const rawDeltaX = Math.round((e.clientX - lastX) * sensitivity);
     const rawDeltaY = Math.round((e.clientY - lastY) * sensitivity);
+
+    const moveX = Math.abs(e.clientX - mouseStartX);
+    const moveY = Math.abs(e.clientY - mouseStartY);
+    const dist = Math.sqrt(moveX * moveX + moveY * moveY);
+
+    if (dist > TAP_THRESHOLD) {
+        if (isMouseDoubleDragCandidate) {
+            isMouseDoubleDragCandidate = false;
+            isMouseDoubleDragging = true;
+            sendWebSocketMessage('toggleMouse', { button: 'left', state: 'down' });
+        }
+    }
 
     const rotated = getRotatedDeltas(rawDeltaX, rawDeltaY);
     const deltaX = rotated.x;
@@ -727,6 +762,13 @@ function handleTouchpadMove(e) {
 function handleTouchpadEnd() {
     isDragging = false;
     touchpad.classList.remove('dragging');
+    lastMouseUpTime = Date.now();
+
+    if (isMouseDoubleDragging) {
+        sendWebSocketMessage('toggleMouse', { button: 'left', state: 'up' });
+        isMouseDoubleDragging = false;
+    }
+    isMouseDoubleDragCandidate = false;
 }
 
 function handleTouchMove(e) {
@@ -789,8 +831,17 @@ function handleTouchMove(e) {
         // Check if movement exceeds tap threshold
         const moveX = Math.abs(touch.clientX - touchStartX);
         const moveY = Math.abs(touch.clientY - touchStartY);
-        if (moveX > TAP_THRESHOLD || moveY > TAP_THRESHOLD) {
+        const dist = Math.sqrt(moveX * moveX + moveY * moveY);
+        if (dist > TAP_THRESHOLD) {
             isTap = false;
+
+            // Double-tap and drag logic
+            if (isDoubleTapDraggingCandidate) {
+                isDoubleTapDraggingCandidate = false;
+                isDoubleTapDragging = true;
+                sendWebSocketMessage('toggleMouse', { button: 'left', state: 'down' });
+                triggerHaptic([30]);
+            }
         }
 
         const rawDeltaX = Math.round((touch.clientX - lastX) * sensitivity);
@@ -824,11 +875,33 @@ function handleTouchStart(e) {
         lastY = (touch.clientY + touch2.clientY) / 2;
         touchStartX = lastX;
         touchStartY = lastY;
+
+        // Cancel double tap dragging candidate/state if second finger is added
+        if (clickTimeout) {
+            clearTimeout(clickTimeout);
+            clickTimeout = null;
+        }
+        if (isDoubleTapDraggingCandidate) {
+            isDoubleTapDraggingCandidate = false;
+        }
+        if (isDoubleTapDragging) {
+            isDoubleTapDragging = false;
+            sendWebSocketMessage('toggleMouse', { button: 'left', state: 'up' });
+        }
     } else {
         lastX = touch.clientX;
         lastY = touch.clientY;
         touchStartX = touch.clientX;
         touchStartY = touch.clientY;
+
+        // Double tap detection
+        if (clickTimeout) {
+            clearTimeout(clickTimeout);
+            clickTimeout = null;
+            isDoubleTapDraggingCandidate = true;
+        } else {
+            isDoubleTapDraggingCandidate = false;
+        }
     }
     
     scrollAccumulatorX = 0;
@@ -844,13 +917,30 @@ function handleTouchEnd(e) {
     isDragging = false;
     touchpad.classList.remove('dragging');
 
+    if (isDoubleTapDragging) {
+        sendWebSocketMessage('toggleMouse', { button: 'left', state: 'up' });
+        isDoubleTapDragging = false;
+        return;
+    }
+
+    if (isDoubleTapDraggingCandidate) {
+        // Double tapped without dragging -> Double click!
+        handleMouseClick('left', true);
+        isDoubleTapDraggingCandidate = false;
+        return;
+    }
+
     if (isTap) {
         isTap = false; // Prevent multiple click triggers from successive finger lifts
         const duration = Date.now() - touchStartTime;
         if (duration < TAP_DURATION) {
             const fingers = parseInt(touchpad.dataset.fingers || '1');
             if (fingers === 1) {
-                handleMouseClick('left');
+                // Delay single click to verify if a double tap occurs
+                clickTimeout = setTimeout(() => {
+                    handleMouseClick('left');
+                    clickTimeout = null;
+                }, 200);
             } else if (fingers === 2) {
                 handleMouseClick('right');
             }
@@ -876,9 +966,9 @@ function handleTouchpadWheel(e) {
     }
 }
 
-function handleMouseClick(button) {
+function handleMouseClick(button, double = false) {
     triggerHaptic([20]);
-    sendWebSocketMessage('mouseClick', { button });
+    sendWebSocketMessage('mouseClick', { button, double });
 }
 
 // Unlock Slider Logic
