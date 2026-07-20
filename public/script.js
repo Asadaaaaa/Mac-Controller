@@ -91,15 +91,16 @@ let unlockThumbWidth = 0;
 let unlockTrackWidth = 0;
 let maxDrag = 0;
 
-// Gyroscope / Air Mouse State
+// Accelerometer / Air Mouse State
 let isGyroActive = false;
-let lastBeta = null;
-let lastGamma = null;
 let gyroSensitivity = 1.0;
 let smoothX = 0;
 let smoothY = 0;
 let velocityX = 0;
 let velocityY = 0;
+let biasX = 0; // High-pass filter: estimated gravity/bias on X
+let biasY = 0; // High-pass filter: estimated gravity/bias on Y
+let biasInitialized = false;
 
 // Watch mode state
 let isWatchActive = false;
@@ -1432,112 +1433,73 @@ async function requestGyroPermission() {
 
 function startGyro() {
     isGyroActive = true;
-    lastBeta = null;
-    lastGamma = null;
     smoothX = 0;
     smoothY = 0;
     velocityX = 0;
     velocityY = 0;
-    window.addEventListener('deviceorientation', handleGyroscope);
+    biasX = 0;
+    biasY = 0;
+    biasInitialized = false;
     window.addEventListener('devicemotion', handleMotion);
-    showToast('Sensors Enabled (Tilt & Slide)');
+    showToast('Accelerometer Enabled (Slide on desk)');
 }
 
 function stopGyro() {
     isGyroActive = false;
-    window.removeEventListener('deviceorientation', handleGyroscope);
     window.removeEventListener('devicemotion', handleMotion);
-    showToast('Sensors Disabled');
+    showToast('Accelerometer Disabled');
 }
 
-function handleGyroscope(e) {
-    if (!isGyroActive) return;
 
-    const beta = e.beta;
-    const gamma = e.gamma;
 
-    if (beta === null || gamma === null) return;
-
-    if (lastBeta === null || lastGamma === null) {
-        lastBeta = beta;
-        lastGamma = gamma;
-        return;
-    }
-
-    const deltaBeta = beta - lastBeta;
-    const deltaGamma = gamma - lastGamma;
-
-    // Ignore major flip anomalies (device rotated rapidly)
-    if (Math.abs(deltaBeta) > 45 || Math.abs(deltaGamma) > 45) {
-        lastBeta = beta;
-        lastGamma = gamma;
-        return;
-    }
-
-    // Get current screen orientation angle (portrait vs landscape)
-    const orientation = window.orientation || (screen.orientation && screen.orientation.angle) || 0;
-    const angleRad = (orientation * Math.PI) / 180;
-    const cos = Math.cos(angleRad);
-    const sin = Math.sin(angleRad);
-
-    // Rotate coordination axes based on orientation
-    const rotatedX = deltaGamma * cos + deltaBeta * sin;
-    const rotatedY = deltaBeta * cos - deltaGamma * sin;
-
-    // Apply scale factors (sensitivity multiplier and baseline scale)
-    const baseScale = 8;
-    const rawMoveX = rotatedX * baseScale * gyroSensitivity;
-    const rawMoveY = rotatedY * baseScale * gyroSensitivity;
-
-    // Low pass filter smoothing
-    const smoothing = 0.25;
-    smoothX = (rawMoveX * smoothing) + (smoothX * (1 - smoothing));
-    smoothY = (rawMoveY * smoothing) + (smoothY * (1 - smoothing));
-
-    const finalMoveX = Math.round(smoothX);
-    const finalMoveY = Math.round(smoothY);
-
-    const threshold = 0.05;
-    if (Math.abs(smoothX) > threshold || Math.abs(smoothY) > threshold) {
-        if (finalMoveX !== 0 || finalMoveY !== 0) {
-            scheduleMouseMove(finalMoveX, finalMoveY);
-        }
-    }
-
-    lastBeta = beta;
-    lastGamma = gamma;
-}
 
 function handleMotion(e) {
     if (!isGyroActive) return;
 
     // Prefer linear acceleration (gravity excluded).
     // Fall back to accelerationIncludingGravity if the device doesn't support gravity separation.
-    // When phone is flat on desk, gravity is almost entirely on Z axis,
-    // so X and Y from accelerationIncludingGravity are still usable.
     const accel = (e.acceleration && e.acceleration.x !== null)
         ? e.acceleration
         : e.accelerationIncludingGravity;
 
     if (!accel || accel.x === null || accel.y === null) return;
 
-    let ax = accel.x;
-    let ay = accel.y;
+    let rawAX = accel.x;
+    let rawAY = accel.y;
 
-    // Deadzone filter — reject sensor noise and minor desk vibrations
-    const deadzone = 0.4; // m/s²
-    const axAbove = Math.abs(ax) >= deadzone;
-    const ayAbove = Math.abs(ay) >= deadzone;
-    if (!axAbove) ax = 0;
-    if (!ayAbove) ay = 0;
+    // --- High-pass filter: remove gravity/sensor bias ---
+    // When the phone is flat but slightly tilted, gravity leaks into X/Y axes.
+    // Track a slow-moving average (bias) and subtract it.
+    if (!biasInitialized) {
+        biasX = rawAX;
+        biasY = rawAY;
+        biasInitialized = true;
+        return;
+    }
+    const biasAlpha = 0.95; // How slowly the bias adapts (higher = slower = more stable)
+    biasX = biasAlpha * biasX + (1 - biasAlpha) * rawAX;
+    biasY = biasAlpha * biasY + (1 - biasAlpha) * rawAY;
+    let ax = rawAX - biasX;
+    let ay = rawAY - biasY;
 
-    // If nothing above deadzone, just apply friction and exit
-    if (!axAbove && !ayAbove) {
-        // Aggressive friction when phone is still — stop cursor quickly
-        velocityX *= 0.6;
-        velocityY *= 0.6;
-        if (Math.abs(velocityX) < 0.5) velocityX = 0;
-        if (Math.abs(velocityY) < 0.5) velocityY = 0;
+    // --- Low-pass filter: smooth out vibration noise ---
+    const lpAlpha = 0.4; // 0 = full smoothing, 1 = no smoothing
+    smoothX = lpAlpha * ax + (1 - lpAlpha) * smoothX;
+    smoothY = lpAlpha * ay + (1 - lpAlpha) * smoothY;
+    ax = smoothX;
+    ay = smoothY;
+
+    // Deadzone filter — reject remaining noise
+    const deadzone = 0.3; // m/s² (can be lower now thanks to bias removal)
+    if (Math.abs(ax) < deadzone) ax = 0;
+    if (Math.abs(ay) < deadzone) ay = 0;
+
+    // If nothing above deadzone, brake and exit — cursor stops where phone stops
+    if (ax === 0 && ay === 0) {
+        velocityX *= 0.65;
+        velocityY *= 0.65;
+        if (Math.abs(velocityX) < 0.3) velocityX = 0;
+        if (Math.abs(velocityY) < 0.3) velocityY = 0;
 
         const mx = Math.round(velocityX);
         const my = Math.round(velocityY);
@@ -1553,20 +1515,28 @@ function handleMotion(e) {
     const cos = Math.cos(angleRad);
     const sin = Math.sin(angleRad);
 
-    const rotatedX = ax * cos + ay * sin;
-    const rotatedY = ay * cos - ax * sin;
+    const rotatedAX = ax * cos + ay * sin;
+    const rotatedAY = -(ay * cos - ax * sin); // negate Y: slide forward → cursor moves up
 
-    // Delta time in seconds
     const dt = (e.interval || 16) / 1000;
+    const accelScale = 180 * gyroSensitivity;
 
-    // Integrate acceleration into velocity
-    // X axis: slide right → positive accel.x → positive deltaX → cursor moves right (correct, no negation)
-    // Y axis: slide forward (away from user) → positive accel.y → but screen Y is inverted → negate
-    const accelScale = 120;
-    velocityX += rotatedX * dt * accelScale * gyroSensitivity;
-    velocityY += -rotatedY * dt * accelScale * gyroSensitivity;
+    // --- Asymmetric integration ---
+    // Only integrate acceleration that INCREASES speed (same direction as velocity).
+    // Ignore deceleration (opposing velocity) — let friction handle stopping.
+    const pushX = rotatedAX * dt * accelScale;
+    const pushY = rotatedAY * dt * accelScale;
 
-    // Gentle friction while actively sliding — preserve momentum
+    // X axis: integrate only if accelerating in same direction or starting new motion
+    if (Math.abs(velocityX) < 0.5 || pushX * velocityX >= 0) {
+        velocityX += pushX;
+    }
+    // Y axis: same logic
+    if (Math.abs(velocityY) < 0.5 || pushY * velocityY >= 0) {
+        velocityY += pushY;
+    }
+
+    // Gentle friction during active motion
     velocityX *= 0.92;
     velocityY *= 0.92;
 
