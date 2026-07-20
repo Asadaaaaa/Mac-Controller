@@ -1068,3 +1068,198 @@ body.fullscreen-active {
     transform: translateX(-50%) translateY(0);
     opacity: 1;
 }
+
+/* ==================== Camera Tab ==================== */
+.camera-section {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    margin-top: 12px;
+}
+
+.camera-preview-container {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 4 / 3;
+    background: #0a0a0f;
+    border-radius: var(--radius-md);
+    overflow: hidden;
+    border: 1px solid var(--surface-border);
+}
+
+.camera-video {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    transform: scaleX(-1); /* mirror front camera */
+}
+
+.camera-canvas {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    transform: scaleX(-1); /* mirror to match video */
+    pointer-events: none;
+    z-index: 2;
+}
+
+.camera-placeholder {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    color: var(--text-secondary);
+    z-index: 3;
+    background: linear-gradient(145deg, rgba(10, 10, 20, 0.9), rgba(20, 15, 40, 0.85));
+}
+
+.camera-placeholder svg {
+    opacity: 0.5;
+}
+
+.camera-placeholder p {
+    font-size: 13px;
+    font-weight: 500;
+    opacity: 0.6;
+}
+
+.camera-placeholder.hidden {
+    display: none;
+}
+
+.camera-gesture-badge {
+    position: absolute;
+    bottom: 12px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 16px;
+    background: rgba(0, 0, 0, 0.55);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 20px;
+    z-index: 4;
+    opacity: 0;
+    transition: opacity 0.3s ease, transform 0.3s ease;
+    pointer-events: none;
+}
+
+.camera-gesture-badge.active {
+    opacity: 1;
+}
+
+.gesture-emoji {
+    font-size: 18px;
+    line-height: 1;
+}
+
+.gesture-label {
+    font-size: 12px;
+    font-weight: 600;
+    color: #ffffff;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.camera-status-dot {
+    position: absolute;
+    top: 12px;
+    right: 12px;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--danger);
+    z-index: 4;
+    opacity: 0;
+    transition: opacity 0.3s ease, background 0.3s ease;
+}
+
+.camera-status-dot.active {
+    opacity: 1;
+    background: var(--success);
+    animation: cameraPulse 2s ease-in-out infinite;
+}
+
+.camera-status-dot.no-hand {
+    opacity: 1;
+    background: var(--danger);
+    animation: none;
+}
+
+@keyframes cameraPulse {
+    0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.5); }
+    50% { opacity: 0.7; box-shadow: 0 0 0 6px rgba(52, 211, 153, 0); }
+}
+
+.camera-flip-btn {
+    position: absolute;
+    top: 10px;
+    left: 10px;
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    background: rgba(0, 0, 0, 0.45);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    color: #ffffff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    z-index: 5;
+    opacity: 0;
+    transition: opacity 0.3s ease, background 0.2s ease, transform 0.3s ease;
+}
+
+.camera-flip-btn.active {
+    opacity: 1;
+}
+
+.camera-flip-btn:active {
+    transform: scale(0.9);
+    background: rgba(0, 0, 0, 0.7);
+}
+
+.camera-info {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    background: var(--surface);
+    border: 1px solid var(--surface-border);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+}
+
+.camera-info-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 14px;
+    font-size: 12.5px;
+    color: var(--text-secondary);
+    border-bottom: 1px solid var(--surface-border);
+}
+
+.camera-info-row:last-child {
+    border-bottom: none;
+}
+
+.camera-info-action {
+    font-weight: 600;
+    color: var(--primary);
+    font-size: 11.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+}

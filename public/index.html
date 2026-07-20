@@ -5,6 +5,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Mac Controller</title>
+    <meta name="description" content="Remote Mac controller with touchpad, camera hand tracking, gyroscope and live screen streaming">
     <link rel="stylesheet" href="style.css">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -54,6 +55,13 @@
                         <circle cx="12" cy="12" r="3" />
                     </svg>
                     <span>Watch</span>
+                </button>
+                <button class="tab-btn" data-tab="camera">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="tab-icon">
+                        <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
+                        <circle cx="12" cy="13" r="4" />
+                    </svg>
+                    <span>Camera</span>
                 </button>
                 <button class="tab-btn" data-tab="controls">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="tab-icon">
@@ -155,7 +163,78 @@
                 </div>
             </div>
 
-            <!-- TAB 2: Audio, D-Pad, Keys -->
+            <!-- TAB 3: Camera Hand Tracking -->
+            <div id="tab-camera" class="tab-content">
+                <div class="toggle-container">
+                    <span class="toggle-label">Hand Tracking</span>
+                    <div class="toggle-right">
+                        <select id="cameraSensitivitySelect" class="resolution-select">
+                            <option value="0.5">0.5x</option>
+                            <option value="1.0" selected>1.0x</option>
+                            <option value="1.5">1.5x</option>
+                            <option value="2.0">2.0x</option>
+                            <option value="3.0">3.0x</option>
+                        </select>
+                        <label class="switch">
+                            <input type="checkbox" id="cameraToggle">
+                            <span class="slider round"></span>
+                        </label>
+                    </div>
+                </div>
+
+                <div class="camera-section">
+                    <div class="camera-preview-container" id="cameraPreviewContainer">
+                        <video id="cameraVideo" class="camera-video" autoplay playsinline muted></video>
+                        <canvas id="cameraCanvas" class="camera-canvas"></canvas>
+                        <div class="camera-placeholder" id="cameraPlaceholder">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="48" height="48">
+                                <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
+                                <circle cx="12" cy="13" r="4" />
+                            </svg>
+                            <p>Enable hand tracking to start</p>
+                        </div>
+                        <div class="camera-gesture-badge" id="cameraGestureBadge">
+                            <span class="gesture-emoji" id="gestureEmoji">✋</span>
+                            <span class="gesture-label" id="gestureLabel">Idle</span>
+                        </div>
+                        <div class="camera-status-dot" id="cameraStatusDot"></div>
+                        <button class="camera-flip-btn" id="cameraFlipBtn" aria-label="Switch camera">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="20" height="20">
+                                <path d="M11 19H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h5" />
+                                <path d="M13 5h7a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-5" />
+                                <polyline points="16 3 18 1 20 3" />
+                                <polyline points="8 21 6 23 4 21" />
+                                <line x1="18" y1="1" x2="18" y2="13" />
+                                <line x1="6" y1="11" x2="6" y2="23" />
+                            </svg>
+                        </button>
+                    </div>
+                    <div class="camera-info">
+                        <div class="camera-info-row">
+                            <span>☝️ 1 finger</span>
+                            <span class="camera-info-action">Move cursor</span>
+                        </div>
+                        <div class="camera-info-row">
+                            <span>✌️ 2 fingers</span>
+                            <span class="camera-info-action">Scroll</span>
+                        </div>
+                        <div class="camera-info-row">
+                            <span>👌 Pinch</span>
+                            <span class="camera-info-action">Left click</span>
+                        </div>
+                        <div class="camera-info-row">
+                            <span>🤏 Pinch hold</span>
+                            <span class="camera-info-action">Drag</span>
+                        </div>
+                        <div class="camera-info-row">
+                            <span>✋ Open palm</span>
+                            <span class="camera-info-action">Pause</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- TAB 4: Audio, D-Pad, Keys -->
             <div id="tab-controls" class="tab-content">
                 <div class="volume-section">
                     <div class="volume-header">

@@ -31,6 +31,18 @@ const resolutionSelect = document.getElementById('resolutionSelect');
 const gyroToggle = document.getElementById('gyroToggle');
 const gyroSensitivitySelect = document.getElementById('gyroSensitivitySelect');
 
+// Camera tab elements
+const cameraToggle = document.getElementById('cameraToggle');
+const cameraVideo = document.getElementById('cameraVideo');
+const cameraCanvas = document.getElementById('cameraCanvas');
+const cameraPlaceholder = document.getElementById('cameraPlaceholder');
+const cameraGestureBadge = document.getElementById('cameraGestureBadge');
+const gestureEmoji = document.getElementById('gestureEmoji');
+const gestureLabel = document.getElementById('gestureLabel');
+const cameraStatusDot = document.getElementById('cameraStatusDot');
+const cameraFlipBtn = document.getElementById('cameraFlipBtn');
+const cameraSensitivitySelect = document.getElementById('cameraSensitivitySelect');
+
 // Watch tab elements
 const watchStream = document.getElementById('watchStream');
 const watchContainer = document.getElementById('watchContainer');
@@ -101,6 +113,12 @@ let velocityY = 0;
 let biasX = 0; // High-pass filter: estimated gravity/bias on X
 let biasY = 0; // High-pass filter: estimated gravity/bias on Y
 let biasInitialized = false;
+
+// Camera hand tracking state
+let handTracker = null;
+let isCameraActive = false;
+let cameraFacing = 'user'; // 'user' = front, 'environment' = back
+let cameraSensitivity = 1.0;
 
 // Watch mode state
 let isWatchActive = false;
@@ -472,7 +490,7 @@ function setupEventListeners() {
                 targetElement.classList.add('active');
             }
 
-            // Manage Watch stream lifecycle on tab switch
+            // Manage Watch & Camera lifecycle on tab switch
             const previousTab = activeTab;
             activeTab = targetTab;
 
@@ -480,6 +498,14 @@ function setupEventListeners() {
                 startWatchStream();
             } else if (previousTab === 'watch' && targetTab !== 'watch') {
                 stopWatchStream();
+            }
+
+            // Stop camera when leaving camera tab
+            if (previousTab === 'camera' && targetTab !== 'camera') {
+                if (isCameraActive) {
+                    cameraToggle.checked = false;
+                    stopHandTracker();
+                }
             }
         });
     });
@@ -565,6 +591,21 @@ function setupEventListeners() {
     }
     if (gyroSensitivitySelect) {
         gyroSensitivitySelect.addEventListener('change', handleGyroSensitivityChange);
+    }
+
+    // Camera Hand Tracking Events
+    if (cameraToggle) {
+        cameraToggle.addEventListener('change', handleCameraToggle);
+    }
+    if (cameraSensitivitySelect) {
+        cameraSensitivitySelect.addEventListener('change', (e) => {
+            cameraSensitivity = parseFloat(e.target.value);
+            if (handTracker) handTracker.sensitivity = cameraSensitivity;
+            showToast(`Camera sensitivity: ${e.target.value}x`);
+        });
+    }
+    if (cameraFlipBtn) {
+        cameraFlipBtn.addEventListener('click', handleCameraFlip);
     }
 
     // Fullscreen Events
@@ -1576,6 +1617,510 @@ function disableGyroUI() {
         stopGyro();
     }
 }
+
+// ============================================================
+// Camera Hand Tracking (MediaPipe Hands)
+// ============================================================
+
+class HandTracker {
+    constructor(videoEl, canvasEl, sendMessageFn) {
+        this.video = videoEl;
+        this.canvas = canvasEl;
+        this.ctx = canvasEl.getContext('2d');
+        this.sendMessage = sendMessageFn;
+        this.hands = null;
+        this.camera = null;
+        this.running = false;
+        this.sensitivity = cameraSensitivity;
+
+        // Gesture state
+        this.prevIndexX = null;
+        this.prevIndexY = null;
+        this.prevScrollY = null;
+        this.currentGesture = 'none';
+        this.pinchStartTime = 0;
+        this.isPinchHeld = false;
+        this.isDragActive = false;
+        this.clickCooldown = false;
+        this.lastClickTime = 0;
+        this.gestureStableCount = 0;
+        this.lastStableGesture = 'none';
+
+        // Smoothing
+        this.smoothX = 0;
+        this.smoothY = 0;
+        this.smoothScrollY = 0;
+    }
+
+    async loadMediaPipe() {
+        // Dynamically load MediaPipe Hands from CDN if not already loaded
+        if (window.Hands) return;
+
+        const loadScript = (src) => new Promise((resolve, reject) => {
+            const existing = document.querySelector(`script[src="${src}"]`);
+            if (existing) { resolve(); return; }
+            const s = document.createElement('script');
+            s.src = src;
+            s.crossOrigin = 'anonymous';
+            s.onload = resolve;
+            s.onerror = reject;
+            document.head.appendChild(s);
+        });
+
+        await loadScript('https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/hands.min.js');
+        await loadScript('https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3.1675466862/camera_utils.min.js');
+        await loadScript('https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils@0.3.1675466124/drawing_utils.min.js');
+    }
+
+    async start(facingMode) {
+        showToast('Loading hand tracking model...');
+        await this.loadMediaPipe();
+
+        this.hands = new window.Hands({
+            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/${file}`
+        });
+
+        this.hands.setOptions({
+            maxNumHands: 1,
+            modelComplexity: 1,
+            minDetectionConfidence: 0.7,
+            minTrackingConfidence: 0.6
+        });
+
+        this.hands.onResults((results) => this.onResults(results));
+
+        this.camera = new window.Camera(this.video, {
+            onFrame: async () => {
+                if (this.running && this.hands) {
+                    await this.hands.send({ image: this.video });
+                }
+            },
+            width: 640,
+            height: 480,
+            facingMode: facingMode || 'user'
+        });
+
+        this.running = true;
+        await this.camera.start();
+        showToast('Hand tracking active');
+    }
+
+    stop() {
+        this.running = false;
+        if (this.camera) {
+            this.camera.stop();
+            this.camera = null;
+        }
+        if (this.hands) {
+            this.hands.close();
+            this.hands = null;
+        }
+        // Release drag if active
+        if (this.isDragActive) {
+            this.sendMessage('toggleMouse', { button: 'left', state: 'up' });
+            this.isDragActive = false;
+        }
+        this.resetState();
+        // Clear canvas
+        this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+    }
+
+    resetState() {
+        this.prevIndexX = null;
+        this.prevIndexY = null;
+        this.prevScrollY = null;
+        this.currentGesture = 'none';
+        this.pinchStartTime = 0;
+        this.isPinchHeld = false;
+        this.clickCooldown = false;
+        this.gestureStableCount = 0;
+        this.lastStableGesture = 'none';
+        this.smoothX = 0;
+        this.smoothY = 0;
+        this.smoothScrollY = 0;
+    }
+
+    onResults(results) {
+        // Set canvas size to match the video element's rendered dimensions
+        const rect = this.canvas.parentElement.getBoundingClientRect();
+        this.canvas.width = rect.width;
+        this.canvas.height = rect.height;
+        this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+
+        if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+            const landmarks = results.multiHandLandmarks[0];
+
+            // Draw hand landmarks
+            this.drawLandmarks(landmarks);
+
+            // Detect gesture
+            const gesture = this.detectGesture(landmarks);
+
+            // Stabilize: require same gesture for a few frames
+            if (gesture === this.lastStableGesture) {
+                this.gestureStableCount++;
+            } else {
+                this.gestureStableCount = 0;
+                this.lastStableGesture = gesture;
+            }
+
+            const stableGesture = this.gestureStableCount >= 2 ? gesture : this.currentGesture;
+
+            if (stableGesture !== this.currentGesture) {
+                this.onGestureChange(this.currentGesture, stableGesture);
+                this.currentGesture = stableGesture;
+            }
+
+            // Execute gesture action
+            this.executeGesture(stableGesture, landmarks);
+
+            // Update UI
+            updateCameraStatus(true, stableGesture);
+        } else {
+            // No hand detected
+            updateCameraStatus(false, 'none');
+            this.resetState();
+            // Release drag if hand disappears
+            if (this.isDragActive) {
+                this.sendMessage('toggleMouse', { button: 'left', state: 'up' });
+                this.isDragActive = false;
+            }
+        }
+    }
+
+    drawLandmarks(landmarks) {
+        const w = this.canvas.width;
+        const h = this.canvas.height;
+
+        // Connections (simplified hand skeleton)
+        const connections = [
+            [0,1],[1,2],[2,3],[3,4],   // thumb
+            [0,5],[5,6],[6,7],[7,8],   // index
+            [0,9],[9,10],[10,11],[11,12],  // middle
+            [0,13],[13,14],[14,15],[15,16], // ring
+            [0,17],[17,18],[18,19],[19,20], // pinky
+            [5,9],[9,13],[13,17]  // palm
+        ];
+
+        // Draw connections
+        this.ctx.strokeStyle = 'rgba(99, 102, 241, 0.6)';
+        this.ctx.lineWidth = 2;
+        for (const [i, j] of connections) {
+            const a = landmarks[i];
+            const b = landmarks[j];
+            this.ctx.beginPath();
+            this.ctx.moveTo(a.x * w, a.y * h);
+            this.ctx.lineTo(b.x * w, b.y * h);
+            this.ctx.stroke();
+        }
+
+        // Draw landmark points
+        for (let i = 0; i < landmarks.length; i++) {
+            const lm = landmarks[i];
+            const isFingerTip = [4, 8, 12, 16, 20].includes(i);
+            this.ctx.beginPath();
+            this.ctx.arc(lm.x * w, lm.y * h, isFingerTip ? 5 : 3, 0, 2 * Math.PI);
+            this.ctx.fillStyle = isFingerTip ? 'rgba(129, 140, 248, 0.9)' : 'rgba(255, 255, 255, 0.7)';
+            this.ctx.fill();
+        }
+    }
+
+    detectGesture(landmarks) {
+        const fingerStates = this.getFingerStates(landmarks);
+        const thumbUp = fingerStates.thumb;
+        const indexUp = fingerStates.index;
+        const middleUp = fingerStates.middle;
+        const ringUp = fingerStates.ring;
+        const pinkyUp = fingerStates.pinky;
+
+        // Pinch detection: distance between thumb tip (4) and index tip (8)
+        const pinchDist = this.distance(landmarks[4], landmarks[8]);
+        const isPinch = pinchDist < 0.06;
+
+        // Thumb + middle pinch for right click
+        const thumbMiddleDist = this.distance(landmarks[4], landmarks[12]);
+        const isThumbMiddlePinch = thumbMiddleDist < 0.06;
+
+        // Open palm: all 5 fingers extended
+        if (thumbUp && indexUp && middleUp && ringUp && pinkyUp) {
+            return 'palm';
+        }
+
+        // Pinch (thumb + index close)
+        if (isPinch) {
+            return 'pinch';
+        }
+
+        // Thumb + middle pinch (right click)
+        if (isThumbMiddlePinch && !indexUp) {
+            return 'right_pinch';
+        }
+
+        // Peace sign: index + middle up, ring + pinky down
+        if (indexUp && middleUp && !ringUp && !pinkyUp) {
+            return 'peace';
+        }
+
+        // Point: only index up
+        if (indexUp && !middleUp && !ringUp && !pinkyUp) {
+            return 'point';
+        }
+
+        return 'none';
+    }
+
+    getFingerStates(lm) {
+        // Thumb: compare tip x to IP joint x (works for both hands, rough heuristic)
+        // For a mirrored front camera, the direction is reversed
+        const thumbUp = this.distance(lm[4], lm[2]) > this.distance(lm[3], lm[2]);
+
+        // Other fingers: tip y < PIP y means finger is extended (lower y = higher on screen)
+        const indexUp = lm[8].y < lm[6].y;
+        const middleUp = lm[12].y < lm[10].y;
+        const ringUp = lm[16].y < lm[14].y;
+        const pinkyUp = lm[20].y < lm[18].y;
+
+        return { thumb: thumbUp, index: indexUp, middle: middleUp, ring: ringUp, pinky: pinkyUp };
+    }
+
+    distance(a, b) {
+        return Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2 + ((a.z || 0) - (b.z || 0)) ** 2);
+    }
+
+    onGestureChange(oldGesture, newGesture) {
+        // Leaving pinch: handle click/drag release
+        if (oldGesture === 'pinch' && newGesture !== 'pinch') {
+            if (this.isDragActive) {
+                this.sendMessage('toggleMouse', { button: 'left', state: 'up' });
+                this.isDragActive = false;
+            }
+            this.isPinchHeld = false;
+            this.pinchStartTime = 0;
+        }
+
+        // Entering a new gesture: reset position tracking to avoid jumps
+        this.prevIndexX = null;
+        this.prevIndexY = null;
+        this.prevScrollY = null;
+    }
+
+    executeGesture(gesture, landmarks) {
+        const indexTip = landmarks[8];
+        const middleTip = landmarks[12];
+
+        switch (gesture) {
+            case 'point': {
+                // Move cursor using index finger tip position
+                const x = indexTip.x;
+                const y = indexTip.y;
+
+                // Apply smoothing
+                const alpha = 0.45;
+                this.smoothX = this.smoothX === 0 ? x : alpha * x + (1 - alpha) * this.smoothX;
+                this.smoothY = this.smoothY === 0 ? y : alpha * y + (1 - alpha) * this.smoothY;
+
+                if (this.prevIndexX !== null) {
+                    // Calculate delta (normalized 0-1 coords) and scale to pixels
+                    let deltaX = (this.smoothX - this.prevIndexX) * 1920 * this.sensitivity * 0.6;
+                    let deltaY = (this.smoothY - this.prevIndexY) * 1080 * this.sensitivity * 0.6;
+
+                    // Dead zone
+                    if (Math.abs(deltaX) < 1.5) deltaX = 0;
+                    if (Math.abs(deltaY) < 1.5) deltaY = 0;
+
+                    // Invert X because camera is mirrored
+                    deltaX = -deltaX;
+
+                    if (deltaX !== 0 || deltaY !== 0) {
+                        scheduleMouseMove(Math.round(deltaX), Math.round(deltaY));
+                    }
+                }
+
+                this.prevIndexX = this.smoothX;
+                this.prevIndexY = this.smoothY;
+                break;
+            }
+
+            case 'peace': {
+                // Scroll using average Y of index + middle finger
+                const avgY = (indexTip.y + middleTip.y) / 2;
+
+                const alpha = 0.5;
+                this.smoothScrollY = this.smoothScrollY === 0 ? avgY : alpha * avgY + (1 - alpha) * this.smoothScrollY;
+
+                if (this.prevScrollY !== null) {
+                    let deltaY = (this.smoothScrollY - this.prevScrollY) * 500 * this.sensitivity;
+
+                    if (Math.abs(deltaY) < 0.5) deltaY = 0;
+
+                    if (deltaY !== 0) {
+                        // Negative: scroll up (fingers move up), Positive: scroll down
+                        scheduleMouseScroll(0, -Math.round(deltaY));
+                    }
+                }
+
+                this.prevScrollY = this.smoothScrollY;
+                break;
+            }
+
+            case 'pinch': {
+                const now = Date.now();
+
+                if (this.pinchStartTime === 0) {
+                    this.pinchStartTime = now;
+                }
+
+                const pinchDuration = now - this.pinchStartTime;
+
+                // If pinch held for > 300ms, start drag
+                if (pinchDuration > 300 && !this.isDragActive) {
+                    this.isDragActive = true;
+                    this.sendMessage('toggleMouse', { button: 'left', state: 'down' });
+                    triggerHaptic([30]);
+                }
+
+                // If dragging, move cursor based on wrist position
+                if (this.isDragActive) {
+                    const wrist = landmarks[0];
+                    const alpha = 0.45;
+                    this.smoothX = this.smoothX === 0 ? wrist.x : alpha * wrist.x + (1 - alpha) * this.smoothX;
+                    this.smoothY = this.smoothY === 0 ? wrist.y : alpha * wrist.y + (1 - alpha) * this.smoothY;
+
+                    if (this.prevIndexX !== null) {
+                        let deltaX = (this.smoothX - this.prevIndexX) * 1920 * this.sensitivity * 0.5;
+                        let deltaY = (this.smoothY - this.prevIndexY) * 1080 * this.sensitivity * 0.5;
+                        deltaX = -deltaX; // Mirror
+                        if (Math.abs(deltaX) < 1) deltaX = 0;
+                        if (Math.abs(deltaY) < 1) deltaY = 0;
+                        if (deltaX !== 0 || deltaY !== 0) {
+                            scheduleMouseMove(Math.round(deltaX), Math.round(deltaY));
+                        }
+                    }
+                    this.prevIndexX = this.smoothX;
+                    this.prevIndexY = this.smoothY;
+                }
+                break;
+            }
+
+            case 'right_pinch': {
+                // Right click (debounced)
+                const now = Date.now();
+                if (!this.clickCooldown && now - this.lastClickTime > 800) {
+                    this.sendMessage('mouseClick', { button: 'right', double: false });
+                    triggerHaptic([20]);
+                    this.lastClickTime = now;
+                    this.clickCooldown = true;
+                    setTimeout(() => { this.clickCooldown = false; }, 600);
+                }
+                break;
+            }
+
+            case 'palm':
+            case 'none':
+            default:
+                // Idle — do nothing
+                break;
+        }
+    }
+}
+
+// --- Camera lifecycle ---
+
+async function handleCameraToggle(e) {
+    triggerHaptic([15]);
+    if (e.target.checked) {
+        await startHandTracker();
+    } else {
+        stopHandTracker();
+    }
+}
+
+async function startHandTracker() {
+    try {
+        isCameraActive = true;
+        cameraPlaceholder.classList.add('hidden');
+        cameraFlipBtn.classList.add('active');
+
+        handTracker = new HandTracker(cameraVideo, cameraCanvas, sendWebSocketMessage);
+        handTracker.sensitivity = cameraSensitivity;
+        await handTracker.start(cameraFacing);
+    } catch (err) {
+        console.error('Failed to start hand tracker:', err);
+        showToast('Failed to access camera');
+        cameraToggle.checked = false;
+        isCameraActive = false;
+        cameraPlaceholder.classList.remove('hidden');
+        cameraFlipBtn.classList.remove('active');
+    }
+}
+
+function stopHandTracker() {
+    isCameraActive = false;
+    if (handTracker) {
+        handTracker.stop();
+        handTracker = null;
+    }
+    cameraPlaceholder.classList.remove('hidden');
+    cameraFlipBtn.classList.remove('active');
+    cameraStatusDot.className = 'camera-status-dot';
+    cameraGestureBadge.classList.remove('active');
+    showToast('Hand tracking disabled');
+}
+
+async function handleCameraFlip() {
+    triggerHaptic([15]);
+    cameraFacing = cameraFacing === 'user' ? 'environment' : 'user';
+
+    // Flip mirror: front camera is mirrored, back camera is not
+    const shouldMirror = cameraFacing === 'user';
+    cameraVideo.style.transform = shouldMirror ? 'scaleX(-1)' : 'scaleX(1)';
+    cameraCanvas.style.transform = shouldMirror ? 'scaleX(-1)' : 'scaleX(1)';
+
+    if (isCameraActive && handTracker) {
+        handTracker.stop();
+        await handTracker.start(cameraFacing);
+    }
+    showToast(cameraFacing === 'user' ? 'Front camera' : 'Back camera');
+}
+
+function updateCameraStatus(handDetected, gesture) {
+    if (handDetected) {
+        cameraStatusDot.className = 'camera-status-dot active';
+        cameraGestureBadge.classList.add('active');
+
+        const gestureMap = {
+            'point': { emoji: '☝️', label: 'Move' },
+            'peace': { emoji: '✌️', label: 'Scroll' },
+            'pinch': { emoji: '🤏', label: handTracker?.isDragActive ? 'Dragging' : 'Click' },
+            'right_pinch': { emoji: '🤞', label: 'Right Click' },
+            'palm': { emoji: '✋', label: 'Idle' },
+            'none': { emoji: '✋', label: 'Idle' }
+        };
+
+        const info = gestureMap[gesture] || gestureMap['none'];
+        gestureEmoji.textContent = info.emoji;
+        gestureLabel.textContent = info.label;
+    } else {
+        cameraStatusDot.className = 'camera-status-dot no-hand';
+        cameraGestureBadge.classList.remove('active');
+    }
+}
+
+// On pinch release (gesture change from pinch to something else), fire a click
+// We override onGestureChange to add click detection
+const _origOnGestureChange = HandTracker.prototype.onGestureChange;
+HandTracker.prototype.onGestureChange = function(oldGesture, newGesture) {
+    // If pinch was short (< 300ms) and we didn't start a drag, it's a click
+    if (oldGesture === 'pinch' && !this.isDragActive) {
+        const now = Date.now();
+        if (now - this.lastClickTime > 400) {
+            this.sendMessage('mouseClick', { button: 'left', double: false });
+            triggerHaptic([20]);
+            this.lastClickTime = now;
+        }
+    }
+    _origOnGestureChange.call(this, oldGesture, newGesture);
+};
 
 // Initialize the app
 init();
